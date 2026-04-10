@@ -1,0 +1,18 @@
+@function [A] = stokesKernelMat_mex(p, n, n3, rxyz, w, A)
+# FORTRAN stokesKernelMat_mex(int[1] p, int[1] n, int[1] n3, double[3,n] rxyz, double[n] w, inout double[n3,n3] A);
+@function [A] = Sto3dSLPmat_mex(nt, ns, nt3, ns3, xt, xs, ws, if_self, A)
+# FORTRAN Sto3dSLPmat_mex(int[1] nt, int[1] ns, int[1] nt3, int[1] ns3, double[3,nt] xt, double[3,ns] xs, double[ns] ws, int[1] if_self, inout double[nt3,ns3] A);
+@function [T] = Sto3dSLPnmat_mex(nt, ns, nt3, ns3, xt, nxt, xs, ws, if_self, T)
+# FORTRAN Sto3dSLPnmat_mex(int[1] nt, int[1] ns, int[1] nt3, int[1] ns3, double[3,nt] xt, double[3,nt] nxt, double[3,ns] xs, double[ns] ws, int[1] if_self, inout double[nt3,ns3] T);
+@function [r, nx, xu, xv, w] = build_geometry_bvp_mex(p, np, shape_name, r, nx, xu, xv, w)
+shape_bytes = uint8(shape_name);
+shape_name_c = double([shape_bytes(:).' 0]);
+slen = double(numel(shape_name_c));
+# FORTRAN build_geometry_bvp_mex(int[1] p, int[1] np, char[slen] shape_name_c, int[1] slen, inout double[np,3] r, inout double[np,3] nx, inout double[np,3] xu, inout double[np,3] xv, inout double[np] w);
+end
+@function [A] = kerneldSMatrix_mex(p, n, n3, rxyz, nxyz, w, A)
+# FORTRAN kerneldSMatrix_mex(int[1] p, int[1] n, int[1] n3, double[3,n] rxyz, double[3,n] nxyz, double[n] w, inout double[n3,n3] A);
+@function [shc] = sht_ana_rotgrid_mex(p, np, nc, f, nshc, shc)
+# FORTRAN sht_ana_rotgrid_mex(int[1] p, int[1] np, int[1] nc, double[np,nc] f, int[1] nshc, inout dcomplex[nshc,nc] shc);
+@function [yn] = ynm_all_mex(n, np, nm, u, v, yn)
+# FORTRAN ynm_all_mex(int[1] n, int[1] np, int[1] nm, double[np] u, double[np] v, inout dcomplex[np,nm] yn);

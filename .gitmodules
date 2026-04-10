@@ -1,0 +1,3 @@
+[submodule "external/rotgrid"]
+	path = external/rotgrid
+	url = https://github.com/zgimbutas/rotgrid.git
