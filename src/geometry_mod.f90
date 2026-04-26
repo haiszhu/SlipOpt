@@ -9,7 +9,7 @@ contains
 
   subroutine build_geometry_bvp_f90(p, np, shape_id, r, nx, xu, xv, w)
     integer, intent(in) :: p, np, shape_id
-    real(8), intent(out) :: r(np, 3), nx(np, 3), xu(np, 3), xv(np, 3), w(np)
+    real(8), intent(out) :: r(3, np), nx(3, np), xu(3, np), xv(3, np), w(np)
 
     integer :: nu, nv
     integer :: iu, iv, k
@@ -68,9 +68,9 @@ contains
         ely = cos(lambda)
         elz = 0.0d0
 
-        r(k, 1) = rho * erx
-        r(k, 2) = rho * ery
-        r(k, 3) = rho * erz
+        r(1, k) = rho * erx
+        r(2, k) = rho * ery
+        r(3, k) = rho * erz
 
         xt1 = rho_t * erx + rho * etx
         xt2 = rho_t * ery + rho * ety
@@ -80,13 +80,13 @@ contains
         xl2 = rho_l * ery + rho * sin(theta) * ely
         xl3 = rho_l * erz + rho * sin(theta) * elz
 
-        xu(k, 1) = xt1
-        xu(k, 2) = xt2
-        xu(k, 3) = xt3
+        xu(1, k) = xt1
+        xu(2, k) = xt2
+        xu(3, k) = xt3
 
-        xv(k, 1) = xl1
-        xv(k, 2) = xl2
-        xv(k, 3) = xl3
+        xv(1, k) = xl1
+        xv(2, k) = xl2
+        xv(3, k) = xl3
 
         cx = xt2*xl3 - xt3*xl2
         cy = xt3*xl1 - xt1*xl3
@@ -95,9 +95,9 @@ contains
 
         if (jac <= 0.0d0) stop 'build_geometry_bvp_f90: zero jacobian'
 
-        nx(k, 1) = cx / jac
-        nx(k, 2) = cy / jac
-        nx(k, 3) = cz / jac
+        nx(1, k) = cx / jac
+        nx(2, k) = cy / jac
+        nx(3, k) = cz / jac
         w(k) = jac
       end do
     end do

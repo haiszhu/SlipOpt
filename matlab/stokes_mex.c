@@ -1638,7 +1638,7 @@ mw_err_label:
 }
 
 /* ---- matlab/stokes.mw: 11 ----
- * build_geometry_bvp_mex(int[1] p, int[1] np, char[slen] shape_name_c, int[1] slen, inout double[np, 3] r, inout double[np, 3] nx, inout double[np, 3] xu, inout double[np, 3] xv, inout double[np] w);
+ * build_geometry_bvp_mex(int[1] p, int[1] np, char[slen] shape_name_c, int[1] slen, inout double[3, np] r, inout double[3, np] nx, inout double[3, np] xu, inout double[3, np] xv, inout double[np] w);
  */
 static const char* stubids4_ = "build_geometry_bvp_mex(c i int[x], c i int[x], c i char[x], c i int[x], c io double[xx], c io double[xx], c io double[xx], c io double[xx], c io double[x])";
 
@@ -1659,14 +1659,14 @@ void mexStub4(int nlhs, mxArray* plhs[],
     mwSize      dim10_;   /* 1          */
     mwSize      dim11_;   /* slen       */
     mwSize      dim12_;   /* 1          */
-    mwSize      dim13_;   /* np         */
-    mwSize      dim14_;   /* 3          */
-    mwSize      dim15_;   /* np         */
-    mwSize      dim16_;   /* 3          */
-    mwSize      dim17_;   /* np         */
-    mwSize      dim18_;   /* 3          */
-    mwSize      dim19_;   /* np         */
-    mwSize      dim20_;   /* 3          */
+    mwSize      dim13_;   /* 3          */
+    mwSize      dim14_;   /* np         */
+    mwSize      dim15_;   /* 3          */
+    mwSize      dim16_;   /* np         */
+    mwSize      dim17_;   /* 3          */
+    mwSize      dim18_;   /* np         */
+    mwSize      dim19_;   /* 3          */
+    mwSize      dim20_;   /* np         */
     mwSize      dim21_;   /* np         */
 
     dim9_ = (mwSize) mxWrapGetScalar(prhs[9], &mw_err_txt_);
