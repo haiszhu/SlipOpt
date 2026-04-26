@@ -4,7 +4,7 @@ subroutine build_geometry_bvp_mex(p, np, shape_name_c, slen, r, nx, xu, xv, w)
   implicit none
   integer, intent(in) :: p, np, slen
   character(c_char), intent(in) :: shape_name_c(slen)
-  real(8), intent(inout) :: r(np,3), nx(np,3), xu(np,3), xv(np,3), w(np)
+  real(8), intent(inout) :: r(3,np), nx(3,np), xu(3,np), xv(3,np), w(np)
 
   integer :: i, nlen, shape_id
   character(len=32) :: name

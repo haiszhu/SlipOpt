@@ -1,5 +1,6 @@
 module stokes_mod
   use sht_mod, only: gl_nodes, shc_expand, shc_shrink
+  use iso_c_binding, only: c_int, c_long, c_double, c_ptr, c_loc
   implicit none
   private
 
@@ -16,7 +17,9 @@ module stokes_mod
   real(8), save, allocatable :: wht_sph_cache(:)
   real(8), save, allocatable :: ynms_sph_cache(:,:,:)
   complex(8), save, allocatable :: wsave_sph_cache(:)
-
+  integer(c_long), parameter :: CBLAS_COL_MAJOR = 102_c_long
+  integer(c_long), parameter :: CBLAS_NO_TRANS  = 111_c_long
+  integer(c_long), parameter :: CBLAS_TRANS     = 112_c_long
   interface
     subroutine rotviaprojf90(beta, nterms, m1, m2, mpole, lmp, mpout, lmpn)
       real(8), intent(in) :: beta
@@ -55,6 +58,34 @@ module stokes_mod
       real(8), intent(in) :: ynms(0:nterms,0:nterms,ntheta/2+1)
       complex(8), intent(in) :: wsave(4*nphi+15)
     end subroutine sphtrans_cmpl
+
+    subroutine cblas_dgemv(layout, transa, m, n, alpha, a, lda, x, incx, beta, y, incy) &
+      bind(C, name='cblas_dgemv')
+      import :: c_long, c_double, c_ptr
+      integer(c_long), value :: layout, transa, m, n, lda, incx, incy
+      real(c_double), value :: alpha, beta
+      type(c_ptr), value :: a, x, y
+    end subroutine cblas_dgemv
+
+    subroutine cblas_dgemm(layout, transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc) &
+      bind(C, name='cblas_dgemm')
+      import :: c_long, c_double, c_ptr
+      integer(c_long), value :: layout, transa, transb, m, n, k, lda, ldb, ldc
+      real(c_double), value :: alpha, beta
+      type(c_ptr), value :: a, b, c
+    end subroutine cblas_dgemm
+
+    integer(c_int) function rotmat_h5_read_p(p, np, nu, rall) bind(C, name='rotmat_h5_read_p')
+      import :: c_int, c_double
+      integer(c_int), value :: p, np, nu
+      real(c_double), intent(out) :: rall(*)
+    end function rotmat_h5_read_p
+
+    integer(c_int) function rotmat_h5_write_p(p, np, nu, rall) bind(C, name='rotmat_h5_write_p')
+      import :: c_int, c_double
+      integer(c_int), value :: p, np, nu
+      real(c_double), intent(in) :: rall(*)
+    end function rotmat_h5_write_p
   end interface
 
 contains
@@ -371,20 +402,30 @@ contains
     real(8), intent(out) :: a(3*n, 3*n)
 
     integer :: nu, nv, np
-    integer :: i, j, k, c, src, t, ii, jj, indg
+    integer :: i, j, k, c, src, t, indg, idx
+    integer(c_long) :: nbl
     real(8) :: pi, theta_i, d
+    logical :: cache_loaded
+    character(len=64) :: cache_name
+    real(8) :: t_cache0, t_cache1
+    real(8) :: t_phase0, t_phase1
     real(8), allocatable :: xg(:), gwt(:), pols(:), wt_theta(:), ywt(:)
-    real(8), allocatable :: utheta(:), wsph(:), w0(:)
-    real(8), allocatable :: x(:), y(:), z(:)
-    real(8), allocatable :: rall(:,:,:), rmat(:,:)
+    real(8), allocatable :: utheta(:), wsph(:)
+    real(8), allocatable, target :: w0(:)
+    real(8), allocatable, target :: x(:), y(:), z(:)
+    real(8), allocatable, target :: rall(:,:,:)
+    real(8), allocatable, target :: rmat(:,:)
     integer, allocatable :: ind(:)
-    real(8), allocatable :: xx(:), yy(:), zz(:), wk(:), invrho(:)
-    real(8), allocatable :: gx(:), gy(:), gz(:), g(:), lv(:), rowv(:)
+    real(8), allocatable, target :: rhs4(:,:), rhs4p(:,:), rot4(:,:), lv6(:,:), lv6p(:,:), row6(:,:)
+    real(8), allocatable :: invrho(:)
+    real(8), allocatable :: gx(:), gy(:), gz(:), g(:)
     real(8), allocatable :: g11(:,:), g22(:,:), g33(:,:), g12(:,:), g13(:,:), g23(:,:)
+    integer(c_int) :: cache_status
 
     nu = p + 1
     nv = 2 * p
     np = nu * nv
+    nbl = int(np, c_long)
     pi = 4.0d0 * atan(1.0d0)
 
     if (n /= np) stop 'stokesKernelMat: n mismatch'
@@ -394,17 +435,22 @@ contains
     allocate(x(np), y(np), z(np))
     allocate(rall(np,np,nu), rmat(np,np))
     allocate(ind(np))
-    allocate(xx(np), yy(np), zz(np), wk(np), invrho(np))
-    allocate(gx(np), gy(np), gz(np), g(np), lv(np), rowv(np))
+    allocate(invrho(np))
+    allocate(rhs4(np,4), rhs4p(np,4), rot4(np,4), lv6(np,6), lv6p(np,6), row6(np,6))
+    allocate(gx(np), gy(np), gz(np), g(np))
     allocate(g11(np,np), g22(np,np), g33(np,np), g12(np,np), g13(np,np), g23(np,np))
 
     x = rxyz(1,:)
     y = rxyz(2,:)
     z = rxyz(3,:)
+    rhs4(:,1) = x
+    rhs4(:,2) = y
+    rhs4(:,3) = z
 
     call gl_nodes(nu, xg, gwt)
     xg = -xg
 
+    call cpu_time(t_phase0)
     do i = 1, nu
       call legepols(xg(i), p, pols)
       d = sum(pols)
@@ -421,15 +467,44 @@ contains
     end do
 
     w0 = w / wsph
+    rhs4(:,4) = w0
+    call cpu_time(t_phase1)
+    write(*,'(A,F10.4,A)') '[stokes_mod] setup weights/angles in ', t_phase1-t_phase0, ' s'
 
-    do j = 1, nu
-      call rot_mat(p, np, utheta(j), rmat)
-      rall(:,:,j) = rmat
-    end do
+    cache_loaded = .false.
+    write(cache_name, '(A,I3.3,A)') 'rotmat_p', p, '.h5'
+    call cpu_time(t_cache0)
+    cache_status = rotmat_h5_read_p(p, np, nu, rall)
+    call cpu_time(t_cache1)
+    if (cache_status == 1_c_int) cache_loaded = .true.
+    if (cache_loaded) then
+      write(*,'(A,A,A,F10.4,A)') '[stokes_mod] load rotmat file ', trim(cache_name), ' in ', t_cache1-t_cache0, ' s'
+    else
+      write(*,'(A,A,A,F10.4,A)') '[stokes_mod] build fresh rotmat file ', trim(cache_name), ' (miss check ', t_cache1-t_cache0, ' s)'
+    end if
+
+    if (.not. cache_loaded) then
+      call cpu_time(t_cache0)
+      do j = 1, nu
+        call rot_mat(p, np, utheta(j), rmat)
+        rall(:,:,j) = rmat
+      end do
+      call cpu_time(t_cache1)
+      write(*,'(A,A,A,F10.4,A)') '[stokes_mod] build rotmat complete ', trim(cache_name), ' in ', t_cache1-t_cache0, ' s'
+      call cpu_time(t_cache0)
+      cache_status = rotmat_h5_write_p(p, np, nu, rall)
+      call cpu_time(t_cache1)
+      if (cache_status == 1_c_int) then
+        write(*,'(A,A,A,F10.4,A)') '[stokes_mod] wrote rotmat file ', trim(cache_name), ' in ', t_cache1-t_cache0, ' s'
+      else
+        write(*,'(A,A)') '[stokes_mod] warning: failed to write rotmat file ', trim(cache_name)
+      end if
+    end if
 
     g11 = 0.0d0; g22 = 0.0d0; g33 = 0.0d0
     g12 = 0.0d0; g13 = 0.0d0; g23 = 0.0d0
 
+    call cpu_time(t_phase0)
     do k = 1, nv
       t = 0
       do c = 1, nv
@@ -440,54 +515,61 @@ contains
         end do
       end do
 
+      do i = 1, np
+        idx = ind(i)
+        rhs4p(idx,1) = rhs4(i,1)
+        rhs4p(idx,2) = rhs4(i,2)
+        rhs4p(idx,3) = rhs4(i,3)
+        rhs4p(idx,4) = rhs4(i,4)
+      end do
+
       do j = 1, nu
         indg = j + nu*(k-1)
-
-        do ii = 1, np
-          do jj = 1, np
-            rmat(ii,jj) = rall(ind(ii), ind(jj), j)
-          end do
-        end do
-
-        xx = matmul(rmat, x)
-        yy = matmul(rmat, y)
-        zz = matmul(rmat, z)
-        wk = matmul(rmat, w0) * wsph
+        call cblas_dgemm(CBLAS_COL_MAJOR, CBLAS_NO_TRANS, CBLAS_NO_TRANS, nbl, 4_c_long, nbl, 1.0d0, &
+          c_loc(rall(1,1,j)), nbl, c_loc(rhs4p(1,1)), nbl, 0.0d0, c_loc(rot4(1,1)), nbl)
 
         do i = 1, np
-          invrho(i) = 1.0d0 / sqrt((xx(i)-x(indg))**2 + (yy(i)-y(indg))**2 + (zz(i)-z(indg))**2)
-          g(i) = ywt(i) * wk(i) * invrho(i)
-          gx(i) = (xx(i)-x(indg)) * invrho(i)
-          gy(i) = (yy(i)-y(indg)) * invrho(i)
-          gz(i) = (zz(i)-z(indg)) * invrho(i)
+          idx = ind(i)
+          invrho(i) = 1.0d0 / sqrt((rot4(idx,1)-x(indg))**2 + (rot4(idx,2)-y(indg))**2 + &
+            (rot4(idx,3)-z(indg))**2)
+          g(i) = ywt(i) * (rot4(idx,4) * wsph(i)) * invrho(i)
+          gx(i) = (rot4(idx,1)-x(indg)) * invrho(i)
+          gy(i) = (rot4(idx,2)-y(indg)) * invrho(i)
+          gz(i) = (rot4(idx,3)-z(indg)) * invrho(i)
         end do
 
-        lv = g * (1.0d0 + gx*gx)
-        rowv = matmul(lv, rmat)
-        g11(indg,:) = rowv
-
-        lv = g * (1.0d0 + gy*gy)
-        rowv = matmul(lv, rmat)
-        g22(indg,:) = rowv
-
-        lv = g * (1.0d0 + gz*gz)
-        rowv = matmul(lv, rmat)
-        g33(indg,:) = rowv
-
-        lv = g * gx * gy
-        rowv = matmul(lv, rmat)
-        g12(indg,:) = rowv
-
-        lv = g * gx * gz
-        rowv = matmul(lv, rmat)
-        g13(indg,:) = rowv
-
-        lv = g * gy * gz
-        rowv = matmul(lv, rmat)
-        g23(indg,:) = rowv
+        lv6(:,1) = g * (1.0d0 + gx*gx)
+        lv6(:,2) = g * (1.0d0 + gy*gy)
+        lv6(:,3) = g * (1.0d0 + gz*gz)
+        lv6(:,4) = g * gx * gy
+        lv6(:,5) = g * gx * gz
+        lv6(:,6) = g * gy * gz
+        do i = 1, np
+          idx = ind(i)
+          lv6p(idx,1) = lv6(i,1)
+          lv6p(idx,2) = lv6(i,2)
+          lv6p(idx,3) = lv6(i,3)
+          lv6p(idx,4) = lv6(i,4)
+          lv6p(idx,5) = lv6(i,5)
+          lv6p(idx,6) = lv6(i,6)
+        end do
+        call cblas_dgemm(CBLAS_COL_MAJOR, CBLAS_TRANS, CBLAS_NO_TRANS, nbl, 6_c_long, nbl, 1.0d0, &
+          c_loc(rall(1,1,j)), nbl, c_loc(lv6p(1,1)), nbl, 0.0d0, c_loc(row6(1,1)), nbl)
+        do i = 1, np
+          idx = ind(i)
+          g11(indg,i) = row6(idx,1)
+          g22(indg,i) = row6(idx,2)
+          g33(indg,i) = row6(idx,3)
+          g12(indg,i) = row6(idx,4)
+          g13(indg,i) = row6(idx,5)
+          g23(indg,i) = row6(idx,6)
+        end do
       end do
     end do
+    call cpu_time(t_phase1)
+    write(*,'(A,F10.4,A)') '[stokes_mod] assembled scalar kernel blocks in ', t_phase1-t_phase0, ' s'
 
+    call cpu_time(t_phase0)
     do i = 1, np
       do j = 1, np
         a(3*i-2, 3*j-2) = g11(i,j)
@@ -503,11 +585,13 @@ contains
         a(3*i  , 3*j  ) = g33(i,j)
       end do
     end do
+    call cpu_time(t_phase1)
+    write(*,'(A,F10.4,A)') '[stokes_mod] packed 3x3 block matrix in ', t_phase1-t_phase0, ' s'
 
     deallocate(xg, gwt, pols, wt_theta, ywt)
     deallocate(utheta, wsph, w0, x, y, z)
     deallocate(rall, rmat, ind)
-    deallocate(xx, yy, zz, wk, invrho, gx, gy, gz, g, lv, rowv)
+    deallocate(rhs4, rhs4p, rot4, lv6, lv6p, row6, invrho, gx, gy, gz, g)
     deallocate(g11, g22, g33, g12, g13, g23)
   end subroutine stokesKernelMat
 
@@ -632,20 +716,31 @@ contains
     real(8), intent(out) :: a(3*n, 3*n)
 
     integer :: nu, nv, np
-    integer :: i, j, k, c, src, t, ii, jj, indg
+    integer :: i, j, k, c, src, t, indg, idx
+    integer(c_long) :: nbl
     real(8) :: pi, theta_i, d, ndotr
+    logical :: cache_loaded
+    character(len=64) :: cache_name
+    real(8) :: t_cache0, t_cache1
+    real(8) :: t_phase0, t_phase1
     real(8), allocatable :: xg(:), gwt(:), pols(:), wt_theta(:), ywt(:)
-    real(8), allocatable :: utheta(:), wsph(:), w0(:)
-    real(8), allocatable :: x(:), y(:), z(:), nx(:), ny(:), nz(:)
-    real(8), allocatable :: rall(:,:,:), rmat(:,:)
+    real(8), allocatable :: utheta(:), wsph(:)
+    real(8), allocatable, target :: w0(:)
+    real(8), allocatable, target :: x(:), y(:), z(:)
+    real(8), allocatable :: nx(:), ny(:), nz(:)
+    real(8), allocatable, target :: rall(:,:,:)
+    real(8), allocatable, target :: rmat(:,:)
     integer, allocatable :: ind(:)
-    real(8), allocatable :: xx(:), yy(:), zz(:), wk(:), invrho(:)
-    real(8), allocatable :: gx(:), gy(:), gz(:), g(:), lv(:), rowv(:)
+    real(8), allocatable, target :: rhs4(:,:), rhs4p(:,:), rot4(:,:), lv6(:,:), lv6p(:,:), row6(:,:)
+    real(8), allocatable :: invrho(:)
+    real(8), allocatable :: gx(:), gy(:), gz(:), g(:)
     real(8), allocatable :: g11(:,:), g22(:,:), g33(:,:), g12(:,:), g13(:,:), g23(:,:)
+    integer(c_int) :: cache_status
 
     nu = p + 1
     nv = 2 * p
     np = nu * nv
+    nbl = int(np, c_long)
     pi = 4.0d0 * atan(1.0d0)
 
     if (n /= np) stop 'kerneldSMatrix: n mismatch'
@@ -655,8 +750,9 @@ contains
     allocate(x(np), y(np), z(np), nx(np), ny(np), nz(np))
     allocate(rall(np,np,nu), rmat(np,np))
     allocate(ind(np))
-    allocate(xx(np), yy(np), zz(np), wk(np), invrho(np))
-    allocate(gx(np), gy(np), gz(np), g(np), lv(np), rowv(np))
+    allocate(invrho(np))
+    allocate(rhs4(np,4), rhs4p(np,4), rot4(np,4), lv6(np,6), lv6p(np,6), row6(np,6))
+    allocate(gx(np), gy(np), gz(np), g(np))
     allocate(g11(np,np), g22(np,np), g33(np,np), g12(np,np), g13(np,np), g23(np,np))
 
     x = rxyz(1,:)
@@ -665,10 +761,14 @@ contains
     nx = nxyz(1,:)
     ny = nxyz(2,:)
     nz = nxyz(3,:)
+    rhs4(:,1) = x
+    rhs4(:,2) = y
+    rhs4(:,3) = z
 
     call gl_nodes(nu, xg, gwt)
     xg = -xg
 
+    call cpu_time(t_phase0)
     do i = 1, nu
       call legepols(xg(i), p, pols)
       d = sum(pols)
@@ -685,15 +785,44 @@ contains
     end do
 
     w0 = w / wsph
+    rhs4(:,4) = w0
+    call cpu_time(t_phase1)
+    write(*,'(A,F10.4,A)') '[stokes_mod] setup weights/angles in ', t_phase1-t_phase0, ' s'
 
-    do j = 1, nu
-      call rot_mat(p, np, utheta(j), rmat)
-      rall(:,:,j) = rmat
-    end do
+    cache_loaded = .false.
+    write(cache_name, '(A,I3.3,A)') 'rotmat_p', p, '.h5'
+    call cpu_time(t_cache0)
+    cache_status = rotmat_h5_read_p(p, np, nu, rall)
+    call cpu_time(t_cache1)
+    if (cache_status == 1_c_int) cache_loaded = .true.
+    if (cache_loaded) then
+      write(*,'(A,A,A,F10.4,A)') '[stokes_mod] load rotmat file ', trim(cache_name), ' in ', t_cache1-t_cache0, ' s'
+    else
+      write(*,'(A,A,A,F10.4,A)') '[stokes_mod] build fresh rotmat file ', trim(cache_name), ' (miss check ', t_cache1-t_cache0, ' s)'
+    end if
+
+    if (.not. cache_loaded) then
+      call cpu_time(t_cache0)
+      do j = 1, nu
+        call rot_mat(p, np, utheta(j), rmat)
+        rall(:,:,j) = rmat
+      end do
+      call cpu_time(t_cache1)
+      write(*,'(A,A,A,F10.4,A)') '[stokes_mod] build rotmat complete ', trim(cache_name), ' in ', t_cache1-t_cache0, ' s'
+      call cpu_time(t_cache0)
+      cache_status = rotmat_h5_write_p(p, np, nu, rall)
+      call cpu_time(t_cache1)
+      if (cache_status == 1_c_int) then
+        write(*,'(A,A,A,F10.4,A)') '[stokes_mod] wrote rotmat file ', trim(cache_name), ' in ', t_cache1-t_cache0, ' s'
+      else
+        write(*,'(A,A)') '[stokes_mod] warning: failed to write rotmat file ', trim(cache_name)
+      end if
+    end if
 
     g11 = 0.0d0; g22 = 0.0d0; g33 = 0.0d0
     g12 = 0.0d0; g13 = 0.0d0; g23 = 0.0d0
 
+    call cpu_time(t_phase0)
     do k = 1, nv
       t = 0
       do c = 1, nv
@@ -704,55 +833,62 @@ contains
         end do
       end do
 
+      do i = 1, np
+        idx = ind(i)
+        rhs4p(idx,1) = rhs4(i,1)
+        rhs4p(idx,2) = rhs4(i,2)
+        rhs4p(idx,3) = rhs4(i,3)
+        rhs4p(idx,4) = rhs4(i,4)
+      end do
+
       do j = 1, nu
         indg = j + nu*(k-1)
-
-        do ii = 1, np
-          do jj = 1, np
-            rmat(ii,jj) = rall(ind(ii), ind(jj), j)
-          end do
-        end do
-
-        xx = matmul(rmat, x)
-        yy = matmul(rmat, y)
-        zz = matmul(rmat, z)
-        wk = matmul(rmat, w0) * wsph
+        call cblas_dgemm(CBLAS_COL_MAJOR, CBLAS_NO_TRANS, CBLAS_NO_TRANS, nbl, 4_c_long, nbl, 1.0d0, &
+          c_loc(rall(1,1,j)), nbl, c_loc(rhs4p(1,1)), nbl, 0.0d0, c_loc(rot4(1,1)), nbl)
 
         do i = 1, np
-          invrho(i) = 1.0d0 / sqrt((xx(i)-x(indg))**2 + (yy(i)-y(indg))**2 + (zz(i)-z(indg))**2)
-          gx(i) = (xx(i)-x(indg)) * invrho(i)
-          gy(i) = (yy(i)-y(indg)) * invrho(i)
-          gz(i) = (zz(i)-z(indg)) * invrho(i)
+          idx = ind(i)
+          invrho(i) = 1.0d0 / sqrt((rot4(idx,1)-x(indg))**2 + (rot4(idx,2)-y(indg))**2 + &
+            (rot4(idx,3)-z(indg))**2)
+          gx(i) = (rot4(idx,1)-x(indg)) * invrho(i)
+          gy(i) = (rot4(idx,2)-y(indg)) * invrho(i)
+          gz(i) = (rot4(idx,3)-z(indg)) * invrho(i)
           ndotr = nx(indg)*gx(i) + ny(indg)*gy(i) + nz(indg)*gz(i)
-          g(i) = 6.0d0 * ywt(i) * wk(i) * ndotr * invrho(i) * invrho(i)
+          g(i) = 6.0d0 * ywt(i) * (rot4(idx,4) * wsph(i)) * ndotr * invrho(i) * invrho(i)
         end do
 
-        lv = g * gx * gx
-        rowv = matmul(lv, rmat)
-        g11(indg,:) = rowv
-
-        lv = g * gy * gy
-        rowv = matmul(lv, rmat)
-        g22(indg,:) = rowv
-
-        lv = g * gz * gz
-        rowv = matmul(lv, rmat)
-        g33(indg,:) = rowv
-
-        lv = g * gx * gy
-        rowv = matmul(lv, rmat)
-        g12(indg,:) = rowv
-
-        lv = g * gx * gz
-        rowv = matmul(lv, rmat)
-        g13(indg,:) = rowv
-
-        lv = g * gy * gz
-        rowv = matmul(lv, rmat)
-        g23(indg,:) = rowv
+        lv6(:,1) = g * gx * gx
+        lv6(:,2) = g * gy * gy
+        lv6(:,3) = g * gz * gz
+        lv6(:,4) = g * gx * gy
+        lv6(:,5) = g * gx * gz
+        lv6(:,6) = g * gy * gz
+        do i = 1, np
+          idx = ind(i)
+          lv6p(idx,1) = lv6(i,1)
+          lv6p(idx,2) = lv6(i,2)
+          lv6p(idx,3) = lv6(i,3)
+          lv6p(idx,4) = lv6(i,4)
+          lv6p(idx,5) = lv6(i,5)
+          lv6p(idx,6) = lv6(i,6)
+        end do
+        call cblas_dgemm(CBLAS_COL_MAJOR, CBLAS_TRANS, CBLAS_NO_TRANS, nbl, 6_c_long, nbl, 1.0d0, &
+          c_loc(rall(1,1,j)), nbl, c_loc(lv6p(1,1)), nbl, 0.0d0, c_loc(row6(1,1)), nbl)
+        do i = 1, np
+          idx = ind(i)
+          g11(indg,i) = row6(idx,1)
+          g22(indg,i) = row6(idx,2)
+          g33(indg,i) = row6(idx,3)
+          g12(indg,i) = row6(idx,4)
+          g13(indg,i) = row6(idx,5)
+          g23(indg,i) = row6(idx,6)
+        end do
       end do
     end do
+    call cpu_time(t_phase1)
+    write(*,'(A,F10.4,A)') '[stokes_mod] assembled traction kernel blocks in ', t_phase1-t_phase0, ' s'
 
+    call cpu_time(t_phase0)
     do i = 1, np
       do j = 1, np
         a(3*i-2, 3*j-2) = g11(i,j)
@@ -768,11 +904,13 @@ contains
         a(3*i  , 3*j  ) = g33(i,j)
       end do
     end do
+    call cpu_time(t_phase1)
+    write(*,'(A,F10.4,A)') '[stokes_mod] packed 3x3 block matrix in ', t_phase1-t_phase0, ' s'
 
     deallocate(xg, gwt, pols, wt_theta, ywt)
     deallocate(utheta, wsph, w0, x, y, z, nx, ny, nz)
     deallocate(rall, rmat, ind)
-    deallocate(xx, yy, zz, wk, invrho, gx, gy, gz, g, lv, rowv)
+    deallocate(rhs4, rhs4p, rot4, lv6, lv6p, row6, invrho, gx, gy, gz, g)
     deallocate(g11, g22, g33, g12, g13, g23)
   end subroutine kerneldSMatrix
 

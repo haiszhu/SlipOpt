@@ -8,7 +8,7 @@
 shape_bytes = uint8(shape_name);
 shape_name_c = double([shape_bytes(:).' 0]);
 slen = double(numel(shape_name_c));
-# FORTRAN build_geometry_bvp_mex(int[1] p, int[1] np, char[slen] shape_name_c, int[1] slen, inout double[np,3] r, inout double[np,3] nx, inout double[np,3] xu, inout double[np,3] xv, inout double[np] w);
+# FORTRAN build_geometry_bvp_mex(int[1] p, int[1] np, char[slen] shape_name_c, int[1] slen, inout double[3,np] r, inout double[3,np] nx, inout double[3,np] xu, inout double[3,np] xv, inout double[np] w);
 end
 @function [A] = kerneldSMatrix_mex(p, n, n3, rxyz, nxyz, w, A)
 # FORTRAN kerneldSMatrix_mex(int[1] p, int[1] n, int[1] n3, double[3,n] rxyz, double[3,n] nxyz, double[n] w, inout double[n3,n3] A);
