@@ -12,3 +12,8 @@ build/
 data/
 
 *.md
+
+# 
+references/
+*.DS_Store
+*.asv
