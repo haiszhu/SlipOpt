@@ -37,7 +37,7 @@ With the same setup and a fixed GMRES tolerance `tol_list = [1e-4, 1e-4, 1e-4, 1
 
 In [`test_stokes_lemma.m`](test_stokes_lemma.m), the density and rigid-body velocity satisfy
 
-$$
+```math
 \begin{bmatrix}
 A_{\mathrm{mix}} & B_{\mathrm{mix}} \\
 C_{\mathrm{mix}} & 0
@@ -57,9 +57,9 @@ b \\
 U \\
 \Omega
 \end{bmatrix}.
-$$
+```
 
-A related 2D force/torque-coupled formulation is given by [Guo, Zhu, and Veerapaneni (2020), Eq. (23)](https://arxiv.org/pdf/2001.05457#page=8); grouping its first three block rows and columns yields the same `[A B; C 0]` structure.
+A related 2D force/torque-coupled formulation is given by [Guo, Zhu, and Veerapaneni (2020), Eq. (23)](https://arxiv.org/pdf/2001.05457#page=8); the same `[A B; C 0]` structure.
 
 `Amix` contains the mixed boundary conditions, `Bmix` couples the rigid-body velocity, and `Cmix = [nfMat; ntMat]` imposes zero net force and torque. The six extra equations accompany six rigid-body unknowns, giving `3*N + 6` equations and unknowns.
 
