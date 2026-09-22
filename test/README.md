@@ -32,3 +32,66 @@ With the same setup and a fixed GMRES tolerance `tol_list = [1e-4, 1e-4, 1e-4, 1
 | 32 | 1.87249417221334e-07 | 6.09954577561461e-07 | 5.73406192776109e-07 | 6.04363231422386e-05 | 6.17374527304779e-08 | 0 | 32 |
 
 <img src="figures/mixed_bvp_convergence_fixed_tol.png" alt="GMRES and SVD convergence with fixed GMRES tolerance of 1e-4" width="207">
+
+# Force torque system
+
+In [`test_stokes_lemma.m`](test_stokes_lemma.m), the density and rigid-body velocity satisfy
+
+$$
+\begin{bmatrix}
+A_{\mathrm{mix}} & B_{\mathrm{mix}} \\
+C_{\mathrm{mix}} & 0
+\end{bmatrix}
+\begin{bmatrix}
+\mu \\
+\alpha
+\end{bmatrix}
+=
+\begin{bmatrix}
+b \\
+0
+\end{bmatrix},
+\qquad
+\alpha =
+\begin{bmatrix}
+U \\
+\Omega
+\end{bmatrix}.
+$$
+
+A related 2D force/torque-coupled formulation is given by [Guo, Zhu, and Veerapaneni (2020), Eq. (23)](https://arxiv.org/pdf/2001.05457#page=8); grouping its first three block rows and columns yields the same `[A B; C 0]` structure.
+
+`Amix` contains the mixed boundary conditions, `Bmix` couples the rigid-body velocity, and `Cmix = [nfMat; ntMat]` imposes zero net force and torque. The six extra equations accompany six rigid-body unknowns, giving `3*N + 6` equations and unknowns.
+
+First compute the density-block pseudoinverse, with absolute cutoff `svd_tol = 1e-10`:
+
+```matlab
+AmixMatinv = pinv(Amix, svd_tol);
+```
+
+Using this truncated inverse, set the density from the first block row and substitute into the second:
+
+$$
+\mu=A_{\mathrm{mix}}^{\dagger}(b-B_{\mathrm{mix}}\alpha),
+\qquad
+(C_{\mathrm{mix}}A_{\mathrm{mix}}^{\dagger}B_{\mathrm{mix}})\alpha
+=C_{\mathrm{mix}}A_{\mathrm{mix}}^{\dagger}b.
+$$
+
+Solve the resulting 6-by-6 system, then recover the density:
+
+```matlab
+mat6by6 = Cmix * AmixMatinv * Bmix;
+Umix = pinv(mat6by6) * (Cmix * AmixMatinv * rhsmix);
+Mumix = AmixMatinv * (rhsmix - Bmix*Umix);
+```
+
+For `Y43`, `p = 24`, and `N = 1200`. Checking the original equations after the solve gives:
+
+| Quantity | Value |
+| --- | ---: |
+| Relative mixed boundary-condition residual | 1.6197e-05 |
+| Net force norm | 2.2496e-10 |
+| Net torque norm | 1.1881e-11 |
+
+And various lemma verification results.
