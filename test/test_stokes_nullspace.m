@@ -25,6 +25,7 @@ end
 addpath(fullfile(root_dir, 'matlab'));
 addpath(fullfile(root_dir, 'src'));
 addpath(fullfile(root_dir, 'test'));
+addpath(fullfile(root_dir, 'test', 'helpers'));
 
 p_list = [12, 16, 20, 24, 28, 32];
 tol_list = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7];
@@ -141,7 +142,8 @@ for ip = 1:numel(p_list)
   L = spalloc(3*np, 3*np, 9*np);
   for i = 1:np
     idx = 3*i-2:3*i;
-    L(idx,idx) = [t1(:,i), t2(:,i), nx(:,i)]' \ eye(3);
+    % L(idx,idx) = [t1(:,i), t2(:,i), nx(:,i)]' \ eye(3); % this L gives better convergence result
+    L(idx,idx) = ([t1(:,i), t2(:,i), nx(:,i)]' \ (MixMat(idx,idx) + z(idx)*q(idx)')) \ ([t1(:,i), t2(:,i), nx(:,i)]' \ eye(3)); % this L gives 1/2-2/3 less iterations
   end
   % L = speye(3*np); % without preconditioner
   [mu_reg, flag_reg, relres_reg, iter_reg, resvec_reg] = gmres(Areg, b, [], gmres_tol, maxit, @(v) L*v);
@@ -152,7 +154,7 @@ for ip = 1:numel(p_list)
   u_ref = reshape(Sto3dSLPmat_mex(t.n, 1, 3*t.n, 3, t.x, x_force, 1, 0, zeros(3*t.n, 3)) * F, [], 3)';
   errS = vecnorm(u_num - u_ref) / max(vecnorm(u_ref));
   fprintf('velocity error: max=%.6e, mean=%.6e\n', max(errS), mean(errS));
-  plot_bvp_slice(vis, u_num, errS);
+  figure(1); clf; plot_bvp_slice(vis, u_num, errS);
   gmres_error = max(errS);
   
   %% Mixed BVP SVD pseudo-inverse solve
@@ -165,7 +167,7 @@ for ip = 1:numel(p_list)
   u_ref = reshape(Sto3dSLPmat_mex(t.n, 1, 3*t.n, 3, t.x, x_force, 1, 0, zeros(3*t.n, 3)) * F, [], 3)';
   errS = vecnorm(u_num - u_ref) / max(vecnorm(u_ref));
   fprintf('SVD velocity error: max=%.6e, mean=%.6e\n', max(errS), mean(errS));
-  plot_bvp_slice(vis, u_num, errS);
+  figure(2); clf; plot_bvp_slice(vis, u_num, errS);
   
   %
   results(ip,:) = [p, resS, resT, resMix, gmres_error, max(errS), flag_reg, numel(resvec_reg)-1];
@@ -181,65 +183,3 @@ legend('GMRES', 'SVD', 'Location', 'best');
 grid on;
 
 keyboard
-
-
-function [s, t, vis] = prepare_bvp_slice(p, r, w, mu_gmres, factor)
-s = struct('x', r, 'n', size(r, 2));
-[~, gwt] = gauss(p+1);
-wt = pi/p * repmat(gwt(:), 2*p, 1) ./ sin(gl_grid(p));
-s.w = w(:) .* wt(:);
-muS = reshape(mu_gmres, 3, [])';
-s.mu = muS(:);
-[theta, phi] = gl_grid(p);
-theta = reshape(theta, p+1, 2*p);
-phi = reshape(phi, p+1, 2*p);
-theta = [pi*ones(1, 2*p); theta; zeros(1, 2*p)];
-phi = [phi; phi(1:2, :)];
-XCap = zeros((p+3)*2*p, 3);
-for jj = 1:3
-  XCap(:, jj) = sumBasis(shAna(r(jj, :)'), 'Ynm', true, theta(:), phi(:));
-end
-vis.xsurf = reshape(XCap(:, 1), p+3, 2*p);
-vis.ysurf = reshape(XCap(:, 2), p+3, 2*p);
-vis.zsurf = reshape(XCap(:, 3), p+3, 2*p);
-vis.xsurf = [vis.xsurf, vis.xsurf(:, 1)];
-vis.ysurf = [vis.ysurf, vis.ysurf(:, 1)];
-vis.zsurf = [vis.zsurf, vis.zsurf(:, 1)];
-vis.gx = linspace(-2, 2, 201);
-vis.gz = linspace(-2, 2, 201);
-[vis.XX, vis.ZZ] = meshgrid(vis.gx, vis.gz);
-tx = [vis.XX(:), zeros(numel(vis.XX), 1), vis.ZZ(:)]';
-FV = surf2patch(factor*vis.xsurf, factor*vis.ysurf, factor*vis.zsurf, 'triangles');
-vis.OUT = ~inpolyhedron(FV, tx');
-t.x = tx(:, vis.OUT);
-t.n = size(t.x, 2);
-end
-
-function plot_bvp_slice(vis, u_num, errS)
-uMag = vecnorm(u_num);
-uSlice = nan(size(vis.XX));
-uSlice(vis.OUT) = uMag;
-figure(2); clf;
-colormap(parula);
-for k = 1:2
-  subplot(1, 2, k);
-  surf(vis.xsurf, vis.zsurf, vis.ysurf, 'EdgeColor', 'none', 'FaceColor', 0.9*[1 1 1], 'FaceAlpha', 0.8);
-  axis equal; hold on; view(0, 90);
-end
-subplot(1, 2, 1);
-pc = pcolor(vis.gx, vis.gz, uSlice);
-set(pc, 'FaceColor', 'interp', 'LineStyle', 'none');
-clim([0, max(max(uMag), eps)]);
-colorbar;
-title('|u| on y=0 slice');
-subplot(1, 2, 2);
-logErr = log10(max(errS, realmin));
-scatter3(vis.XX(vis.OUT), vis.ZZ(vis.OUT), zeros(nnz(vis.OUT), 1), 10, logErr, 'filled');
-errLimits = [min(logErr), max(logErr)];
-if errLimits(1) == errLimits(2)
-  errLimits = errLimits + [-0.5, 0.5];
-end
-clim(errLimits);
-colorbar;
-title('log10 relative error on slice');
-end

@@ -7,10 +7,10 @@ root_dir = pwd;
 if ~isfolder(fullfile(root_dir, 'matlab'))
   root_dir = fileparts(root_dir);
 end
-
 addpath(fullfile(root_dir, 'matlab'));
 addpath(fullfile(root_dir, 'src'));
 addpath(fullfile(root_dir, 'test'));
+addpath(fullfile(root_dir, 'test', 'helpers'));
 
 p = 24;
 Shape = 'Y43';
@@ -46,100 +46,40 @@ Ahom = Sto3dSLPmat_mex(size(s.x, 2), size(y_force.x, 2), 3*size(s.x, 2), 3*size(
 rhs = Ahom * pt_force;
 rhs = reshape(rhs, [], 3)';
 
-% Robust solve via truncated SVD
+%% Baseline GMRES solve
+b = rhs(:);
+gmres_tol = 1e-4;
+% gmres_tol = 1e-5; % this tolerance no longer converge
+maxit = min(1000, numel(b));
+% L = spalloc(3*np, 3*np, 9*np);
+% for i = 1:np
+%   idx = 3*i-2:3*i;
+%   L(idx,idx) = SMat(idx,idx) \ eye(3);
+% end
+L = speye(3*np); % no need to use the above simple preconditioner, but the accuracy is lower compared to svd...
+[mu_gmres, flag_gmres, relres_gmres, iter_gmres, resvec_gmres] = gmres(SMat, b, [], gmres_tol, maxit, @(v) L*v);
+fprintf('GMRES: flag=%d, iterations=%d, residual=%.6e\n', flag_gmres, numel(resvec_gmres)-1, relres_gmres);
+% evaluate velocity
+[s, t, vis] = prepare_bvp_slice(p, r, w, mu_gmres, factor);
+u_num = reshape(Sto3dSLPmat_mex(t.n, s.n, 3*t.n, 3*s.n, t.x, s.x, s.w, 0, zeros(3*t.n, 3*s.n)) * s.mu, [], 3)';
+u_ref = reshape(Sto3dSLPmat_mex(t.n, 1, 3*t.n, 3, t.x, y_force.x, y_force.w(:), 0, zeros(3*t.n, 3)) * pt_force, [], 3)';
+errS = vecnorm(u_num - u_ref) / max(vecnorm(u_ref));
+fprintf('GMRES velocity error: max=%.6e, mean=%.6e\n', max(errS), mean(errS));
+figure(1); clf; plot_bvp_slice(vis, u_num, errS);
+
+%% Robust solve via truncated SVD
+svd_tol = 1e-12;
 [U_svd, S_svd, V_svd] = svd(SMat);
 diagS = diag(S_svd);
-idx = abs(diagS) > 1e-12;
-invAs = V_svd(:, idx) * inv(S_svd(idx, idx)) * U_svd(:, idx)';
-muS = reshape(invAs * rhs(:), 3, [])';
-
-% Build a closed surface (caps + seam) for inpolyhedron masking
-Xin = s.x';
-Xin = Xin(:);
-[mu, mv, m] = spharm_grid_size([], size(Xin, 1) / 3);
-nv = size(Xin, 2);
-Xin = reshape(Xin, [], 3 * nv);
-
-XCap = zeros((m + 3) * (2 * m), 3);
-[u, v] = gl_grid(m);
-u = reshape(u, mu, mv);
-v = reshape(v, mu, mv);
-u = [pi * ones(1, mv); u; zeros(1, mv)];
-v = [v; v(1:2, :)];
-
-for jj = 1:3
-    XCap(:, jj) = sumBasis(shAna(Xin(:, jj)), 'Ynm', true, u(:), v(:));
-end
-
-xsurf = reshape(XCap(:, 1), m + 3, 2 * m);
-ysurf = reshape(XCap(:, 2), m + 3, 2 * m);
-zsurf = reshape(XCap(:, 3), m + 3, 2 * m);
-
-xsurf = [xsurf, xsurf(:, 1)];
-ysurf = [ysurf, ysurf(:, 1)];
-zsurf = [zsurf, zsurf(:, 1)];
-
-% Slice targets on y=0 plane, masked outside inflated surface
-xlimval = [-2, 2];
-zlimval = [-2, 2];
-nxg = 200;
-nzg = 200;
-gx = linspace(xlimval(1), xlimval(2), nxg + 1);
-gz = linspace(zlimval(1), zlimval(2), nzg + 1);
-[XX, ZZ] = meshgrid(gx, gz);
-
-tx = [XX(:), zeros(numel(XX), 1), ZZ(:)]';
-FV = surf2patch(factor * xsurf, factor * ysurf, factor * zsurf, 'triangles');
-IN = inpolyhedron(FV, tx');
-OUT = ~IN;
-
-t = struct();
-t.x = [XX(OUT), zeros(nnz(OUT), 1), ZZ(OUT)]';
-
-% Evaluate numerical and reference fields on slice targets
-fhomA = zeros(3*size(t.x, 2), 3*size(y_force.x, 2));
-fhomA = Sto3dSLPmat_mex(size(t.x, 2), size(y_force.x, 2), 3*size(t.x, 2), 3*size(y_force.x, 2), ...
-  t.x, y_force.x, y_force.w(:), 0, fhomA);
-fhom = fhomA * pt_force;
-fhom = reshape(fhom, [], 3)';
-fnumA = zeros(3*size(t.x, 2), 3*size(s.x, 2));
-fnumA = Sto3dSLPmat_mex(size(t.x, 2), size(s.x, 2), 3*size(t.x, 2), 3*size(s.x, 2), ...
-  t.x, s.x, s.w(:), 0, fnumA);
-fnum = fnumA * reshape(muS, [], 1);
-fnum = reshape(fnum, [], 3)';
-
-errS = sqrt(sum((fnum - fhom).^2, 1)) / max(sqrt(sum(fhom.^2, 1)));
-
-% Visualize velocity magnitude and error on the same slice
-uSlice = nan(size(XX));
-uMag = sqrt(fnum(1, :).^2 + fnum(3, :).^2);
-uSlice(OUT) = uMag;
-
-figure(2); clf;
-subplot(1,2,1);
-plt = surf(xsurf, zsurf, ysurf);
-plt.EdgeAlpha = 0.0;
-plt.FaceColor = 0.9 * [1 1 1];
-plt.FaceAlpha = 0.8;
-axis equal; hold on; view(0, 90);
-
-pc = pcolor(gx, gz, uSlice);
-set(pc, 'FaceColor', 'interp', 'LineStyle', 'none');
-colormap(parula);
-colorbar;
-title('|u| on y=0 slice');
-
-subplot(1,2,2);
-plt2 = surf(xsurf, zsurf, ysurf);
-plt2.EdgeAlpha = 0.0;
-plt2.FaceColor = 0.9 * [1 1 1];
-plt2.FaceAlpha = 0.8;
-axis equal; hold on; view(0, 90);
-
-scatter3(t.x(1, :), t.x(3, :), t.x(2, :), 10, log10(errS), 'filled');
-colorbar;
-title('log10 relative error on slice');
-
-fprintf('Slice error stats: max=%.3e, mean=%.3e\n', max(errS), mean(errS));
+idx = diagS > svd_tol;
+mu_svd = V_svd(:,idx) * ((U_svd(:,idx)' * b) ./ diagS(idx));
+fprintf('SVD: retained rank=%d, residual=%.6e\n', nnz(idx), norm(SMat*mu_svd-b)/norm(b));
+% evaluate velocity
+[s, t, vis] = prepare_bvp_slice(p, r, w, mu_svd, factor);
+u_num = reshape(Sto3dSLPmat_mex(t.n, s.n, 3*t.n, 3*s.n, t.x, s.x, s.w, 0, zeros(3*t.n, 3*s.n)) * s.mu, [], 3)';
+u_ref = reshape(Sto3dSLPmat_mex(t.n, 1, 3*t.n, 3, t.x, y_force.x, y_force.w(:), 0, zeros(3*t.n, 3)) * pt_force, [], 3)';
+errS = vecnorm(u_num - u_ref) / max(vecnorm(u_ref));
+fprintf('SVD velocity error: max=%.6e, mean=%.6e\n', max(errS), mean(errS));
+figure(2); clf; plot_bvp_slice(vis, u_num, errS);
 
 keyboard

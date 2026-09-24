@@ -1,0 +1,31 @@
+function [s, t, vis] = prepare_bvp_slice(p, r, w, mu_gmres, factor)
+s = struct('x', r, 'n', size(r, 2));
+[~, gwt] = gauss(p+1);
+wt = pi/p * repmat(gwt(:), 2*p, 1) ./ sin(gl_grid(p));
+s.w = w(:) .* wt(:);
+muS = reshape(mu_gmres, 3, [])';
+s.mu = muS(:);
+[theta, phi] = gl_grid(p);
+theta = reshape(theta, p+1, 2*p);
+phi = reshape(phi, p+1, 2*p);
+theta = [pi*ones(1, 2*p); theta; zeros(1, 2*p)];
+phi = [phi; phi(1:2, :)];
+XCap = zeros((p+3)*2*p, 3);
+for jj = 1:3
+  XCap(:, jj) = sumBasis(shAna(r(jj, :)'), 'Ynm', true, theta(:), phi(:));
+end
+vis.xsurf = reshape(XCap(:, 1), p+3, 2*p);
+vis.ysurf = reshape(XCap(:, 2), p+3, 2*p);
+vis.zsurf = reshape(XCap(:, 3), p+3, 2*p);
+vis.xsurf = [vis.xsurf, vis.xsurf(:, 1)];
+vis.ysurf = [vis.ysurf, vis.ysurf(:, 1)];
+vis.zsurf = [vis.zsurf, vis.zsurf(:, 1)];
+vis.gx = linspace(-2, 2, 201);
+vis.gz = linspace(-2, 2, 201);
+[vis.XX, vis.ZZ] = meshgrid(vis.gx, vis.gz);
+tx = [vis.XX(:), zeros(numel(vis.XX), 1), vis.ZZ(:)]';
+FV = surf2patch(factor*vis.xsurf, factor*vis.ysurf, factor*vis.zsurf, 'triangles');
+vis.OUT = ~inpolyhedron(FV, tx');
+t.x = tx(:, vis.OUT);
+t.n = size(t.x, 2);
+end
