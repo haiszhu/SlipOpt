@@ -32,7 +32,7 @@ tol_list = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7];
 % tol_list = [1e-4, 1e-4, 1e-4, 1e-4, 1e-4, 1e-4];
 % p_list = [24];
 % tol_list = [1e-5];
-results = nan(numel(p_list), 8);
+results = nan(numel(p_list), 10);
 
 for ip = 1:numel(p_list)
 
@@ -133,6 +133,9 @@ for ip = 1:numel(p_list)
   maxit = min( 1000, numel(b));
   [~, gwt] = gauss(p+1);
   wsurf = w(:) .* (pi/p * repmat(gwt(:), 2*p, 1) ./ sin(gl_grid(p)));
+  wvec = repelem(wsurf, 3);
+  % Power is -integral u.f dS because nx points out of the body; use the same quadrature for the exact fields.
+  P_exact = -u_exact(:)' * (wvec .* f_exact(:));
   q = reshape(nx .* wsurf.', [], 1) / sum(wsurf);
   z = zeros(3*np, 1);
   z(3:3:end) = 1;
@@ -156,6 +159,9 @@ for ip = 1:numel(p_list)
   fprintf('velocity error: max=%.6e, mean=%.6e\n', max(errS), mean(errS));
   figure(1); clf; plot_bvp_slice(vis, u_num, errS);
   gmres_error = max(errS);
+  P_gmres = -(SMat * mu_reg)' * (wvec .* (TractionMat * mu_reg));
+  gmres_power_error = abs(P_gmres - P_exact);
+  fprintf('GMRES power error: %.6e\n', gmres_power_error);
   
   %% Mixed BVP SVD pseudo-inverse solve
   svd_tol = 1e-10;
@@ -168,18 +174,33 @@ for ip = 1:numel(p_list)
   errS = vecnorm(u_num - u_ref) / max(vecnorm(u_ref));
   fprintf('SVD velocity error: max=%.6e, mean=%.6e\n', max(errS), mean(errS));
   figure(2); clf; plot_bvp_slice(vis, u_num, errS);
+  P_svd = -(SMat * mu_svd)' * (wvec .* (TractionMat * mu_svd));
+  svd_power_error = abs(P_svd - P_exact);
+  fprintf('SVD power error: %.6e\n', svd_power_error);
   
   %
-  results(ip,:) = [p, resS, resT, resMix, gmres_error, max(errS), flag_reg, numel(resvec_reg)-1];
+  results(ip,:) = [p, resS, resT, resMix, gmres_error, max(errS), flag_reg, numel(resvec_reg)-1, gmres_power_error, svd_power_error];
 
 end
 
-disp(array2table(results, 'VariableNames', {'p', 'SLP_null', 'traction_null', 'mixed_null', 'GMRES_error', 'SVD_error', 'GMRES_flag', 'iterations'}));
+disp(array2table(results, 'VariableNames', {'p', 'SLP_null', 'traction_null', 'mixed_null', 'GMRES_error', 'SVD_error', 'GMRES_flag', 'iterations', 'GMRES_power_error', 'SVD_power_error'}));
 figure(3); clf;
-semilogy(results(:,1), results(:,5:6), '-o');
+set(gcf, 'Position', [100, 100, 1000, 400]);
+subplot(1, 2, 1);
+semilogy(results(:,1), results(:,5:6), '-o', 'LineWidth', 1.5);
 xlabel('p');
-ylabel('Maximum relative velocity error');
+ylabel('Maximum normalized velocity error');
+title('(a) Velocity error');
+legend('GMRES', 'SVD', 'Location', 'best');
+grid on;
+subplot(1, 2, 2);
+semilogy(results(:,1), results(:,9:10), '-o', 'LineWidth', 1.5);
+xlabel('p');
+ylabel('Absolute power loss error');
+title('(b) Power loss error');
 legend('GMRES', 'SVD', 'Location', 'best');
 grid on;
 
 keyboard
+
+% exportgraphics(figure(3), './figures/mixed_bvp_gmres_svd_convergence.pdf', 'ContentType', 'vector');
